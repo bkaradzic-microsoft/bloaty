@@ -1546,6 +1546,8 @@ class Bloaty {
   void AddDsymFilename(const Options& options, const std::string& filename);
   void TryAutoLoadDsym(const std::string& binary_path,
                        const std::string& build_id);
+  void TryAutoLoadPdb(const std::string& binary_path,
+                      const std::string& build_id, const std::string& pdb_path);
 
   size_t GetSourceCount() const { return sources_.size(); }
 
@@ -1654,6 +1656,10 @@ std::unique_ptr<ObjectFile> Bloaty::GetObjectFile(
   }
 
   if (!object_file.get()) {
+    object_file = TryOpenPDBFile(file);
+  }
+
+  if (!object_file.get()) {
     THROWF("unknown file type for file '$0'", filename.c_str());
   }
 
@@ -1666,6 +1672,9 @@ void Bloaty::AddFilename(const std::string& filename, bool is_base) {
 
   // Automatically try to load dSYM file for Mach-O binaries
   TryAutoLoadDsym(filename, build_id);
+
+  // Automatically try to load the PDB file for PE binaries
+  TryAutoLoadPdb(filename, build_id, object_file->GetDebugLinkPath());
 
   if (is_base) {
     base_files_.push_back({filename, build_id});
@@ -1828,6 +1837,52 @@ void Bloaty::TryAutoLoadDsym(const std::string& binary_path,
         printf("Found matching dSYM file: %s\n", dsym_file.string().c_str());
       }
     }
+  }
+}
+
+// Automatically discovers and loads the PDB file for a PE binary.
+//
+// Candidates are tried in the same order the Windows debugger uses: a PDB with
+// the recorded file name next to the binary, then the full path recorded in
+// the binary's CodeView debug directory.  Like TryAutoLoadDsym(), this never
+// fails the analysis; missing, invalid or mismatched PDBs are skipped.  An
+// explicit --debug-file overrides anything found here.
+void Bloaty::TryAutoLoadPdb(const std::string& binary_path,
+                            const std::string& build_id,
+                            const std::string& pdb_path) {
+  if (build_id.empty() || pdb_path.empty()) {
+    return;
+  }
+
+  // The recorded path is usually a Windows path; split it by hand so that this
+  // also works when analyzing Windows binaries on other hosts.
+  std::string pdb_name = pdb_path.substr(pdb_path.find_last_of("/\\") + 1);
+  const std::filesystem::path candidates[] = {
+      std::filesystem::path(binary_path).parent_path() / pdb_name,
+      std::filesystem::path(pdb_path),
+  };
+
+  for (const auto& candidate : candidates) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(candidate, ec)) {
+      continue;
+    }
+    std::string pdb_build_id;
+    if (!TryGetBuildId(candidate.string(), &pdb_build_id)) {
+      continue;
+    }
+    if (pdb_build_id != build_id) {
+      if (verbose_level > 0) {
+        WARN("PDB file $0 does not match $1 - skipping", candidate.string(),
+             binary_path);
+      }
+      continue;
+    }
+    AddDebugFilename(candidate.string());
+    if (verbose_level > 1) {
+      printf("Found matching PDB file: %s\n", candidate.string().c_str());
+    }
+    return;
   }
 }
 

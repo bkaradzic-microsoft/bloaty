@@ -36,14 +36,14 @@ $ ./bloaty bloaty -d compileunits
 ```
 
 Bloaty performs a deep analysis of the binary. Using custom
-ELF, DWARF, and Mach-O parsers, Bloaty aims to accurately
+ELF, DWARF, Mach-O and PDB parsers, Bloaty aims to accurately
 attribute every byte of the binary to the symbol or
 compileunit that produced it. It will even disassemble the
 binary looking for references to anonymous data.
 
 Bloaty supports many features:
 
-- **file formats:** ELF, Mach-O, PE/COFF (experimental), WebAssembly (experimental)
+- **file formats:** ELF, Mach-O, PE/COFF with PDB debug info (experimental), WebAssembly (experimental)
 - **data sources:** compileunit (shown above), symbol, section, segment, etc.
 - **hierarchical profiles:** combine multiple data sources into a single report
 - **size diffs:** see where the binary grew, perfect for CI tests

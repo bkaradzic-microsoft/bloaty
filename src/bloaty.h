@@ -331,6 +331,11 @@ class ObjectFile {
                                   DataSource symbol_source,
                                   DisassemblyInfo* info) const = 0;
 
+  // Returns the path of an external debug file that this file refers to (for
+  // example the PDB path recorded in a PE file's CodeView debug directory), or
+  // an empty string if there is none.
+  virtual std::string GetDebugLinkPath() const { return std::string(); }
+
   const InputFile& file_data() const { return *file_data_; }
 
   // Sets the debug file for |this|.  |file| must outlive this instance.
@@ -352,8 +357,15 @@ std::unique_ptr<ObjectFile> TryOpenMachOFile(std::unique_ptr<InputFile>& file);
 std::unique_ptr<ObjectFile> TryOpenWebAssemblyFile(
     std::unique_ptr<InputFile>& file);
 std::unique_ptr<ObjectFile> TryOpenPEFile(std::unique_ptr<InputFile>& file);
+std::unique_ptr<ObjectFile> TryOpenPDBFile(std::unique_ptr<InputFile>& file);
 std::unique_ptr<ObjectFile> TryOpenSourceMapFile(
     std::unique_ptr<InputFile>& file, std::string build_id);
+
+// Provided by pdb.cc.  These read debug information for a PE file from its
+// matching PDB file; addresses are RVAs.
+bool IsPDBFile(std::string_view data);
+void ReadPDBSymbols(std::string_view pdb_data, RangeSink* sink);
+void ReadPDBCompileUnits(std::string_view pdb_data, RangeSink* sink);
 
 // Provided by dwarf.cc.  To use these, a module should fill in a dwarf::File
 // and then call these functions.

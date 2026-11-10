@@ -22,3 +22,6 @@
 [submodule "third_party/zstd"]
 	path = third_party/zstd
 	url = https://github.com/facebook/zstd.git
+[submodule "third_party/raw_pdb"]
+	path = third_party/raw_pdb
+	url = https://github.com/MolecularMatters/raw_pdb.git

@@ -137,3 +137,72 @@ static BloatyTestEntry tests[] = {
 
 INSTANTIATE_TEST_SUITE_P(BloatyTest, BloatyOutputTest, testing::ValuesIn(tests),
                          TestEntryName);
+
+// The test binaries are built for x86 and x64; x86 decorates C names with '_'.
+static const bloaty::RollupRow* FindCSymbol(const bloaty::RollupRow& row,
+                                            const std::string& name) {
+  for (const auto& child : row.sorted_children) {
+    if (child.name == name || child.name == "_" + name) {
+      return &child;
+    }
+  }
+  return nullptr;
+}
+
+TEST_F(BloatyTest, PdbSymbolsAutoLoaded) {
+  // The PDB is found next to the binary using the name recorded in its
+  // CodeView debug directory entry, and matched by GUID and age.
+  for (const char* file :
+       {"msvc-15.0-foo-bar-main-cv.bin", "msvc-16.0-foo-bar-main-cv.bin"}) {
+    // Raw names: some demangled CRT names contain commas, which the CSV
+    // consistency check in RunBloaty() can't handle.
+    RunBloaty({"bloaty", "-d", "symbols", "--demangle=none", "-n", "0", file});
+
+    // int bar_x[1000], initialized data.
+    const bloaty::RollupRow* bar_x = FindCSymbol(*top_row_, "bar_x");
+    ASSERT_TRUE(bar_x != nullptr) << file;
+    EXPECT_EQ(bar_x->size.vm, 4000);
+    EXPECT_EQ(bar_x->size.file, 4000);
+
+    // Uninitialized data takes no space in the file.
+    const bloaty::RollupRow* foo_x = FindCSymbol(*top_row_, "foo_x");
+    ASSERT_TRUE(foo_x != nullptr) << file;
+    EXPECT_GT(foo_x->size.vm, 0);
+    EXPECT_EQ(foo_x->size.file, 0);
+
+    // Procedures are sized exactly from S_GPROC32 records.
+    ASSERT_TRUE(FindCSymbol(*top_row_, "main") != nullptr) << file;
+    ASSERT_TRUE(FindCSymbol(*top_row_, "foo_func") != nullptr) << file;
+  }
+}
+
+TEST_F(BloatyTest, PdbCompileUnits) {
+  RunBloaty({"bloaty", "-d", "compileunits", "-n", "0",
+             "--debug-file=msvc-16.0-foo-bar-main-cv.pdb",
+             "msvc-16.0-foo-bar-main-cv.bin"});
+
+  bool found_crt_object = false;
+  for (const auto& child : top_row_->sorted_children) {
+    if (child.name.size() > 14 && child.name.compare(child.name.size() - 14, 14,
+                                                     "\\gs_report.obj") == 0) {
+      found_crt_object = true;
+      EXPECT_GT(child.size.vm, 0);
+    }
+  }
+  EXPECT_TRUE(found_crt_object);
+
+  // The test code was compiled with /GL, so its contributions are attributed
+  // to the LTCG pseudo-module.
+  const bloaty::RollupRow* cil = FindRow("* CIL *");
+  ASSERT_TRUE(cil != nullptr);
+  EXPECT_GT(cil->size.vm, 4000);
+}
+
+TEST_F(BloatyTest, PdbRequired) {
+  // This DLL has no CodeView record, so there is no PDB to find.
+  AssertBloatyFails({"bloaty", "-d", "symbols", "msvc-16.0-foo-bar.dll"},
+                    "requires the PE file's PDB");
+  // A PDB on its own has no file layout to attribute sizes to.
+  AssertBloatyFails({"bloaty", "msvc-16.0-foo-bar-main-cv.pdb"},
+                    "cannot be analyzed directly");
+}

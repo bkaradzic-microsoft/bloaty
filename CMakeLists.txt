@@ -316,6 +316,31 @@ set_source_files_properties(
   ${DEMUMBLE_SOURCES}
   PROPERTIES COMPILE_DEFINITIONS NDEBUG)
 
+# raw_pdb reads Microsoft PDB files (debug information for PE binaries).
+init_submodule(third_party/raw_pdb)
+include_directories(third_party/raw_pdb/src)
+set(RAW_PDB_SOURCES
+    third_party/raw_pdb/src/PDB.cpp
+    third_party/raw_pdb/src/PDB_CoalescedMSFStream.cpp
+    third_party/raw_pdb/src/PDB_DBIStream.cpp
+    third_party/raw_pdb/src/PDB_DBITypes.cpp
+    third_party/raw_pdb/src/PDB_DirectMSFStream.cpp
+    third_party/raw_pdb/src/PDB_GlobalSymbolStream.cpp
+    third_party/raw_pdb/src/PDB_ImageSectionStream.cpp
+    third_party/raw_pdb/src/PDB_InfoStream.cpp
+    third_party/raw_pdb/src/PDB_IPIStream.cpp
+    third_party/raw_pdb/src/PDB_ModuleInfoStream.cpp
+    third_party/raw_pdb/src/PDB_ModuleLineStream.cpp
+    third_party/raw_pdb/src/PDB_ModuleSymbolStream.cpp
+    third_party/raw_pdb/src/PDB_NamesStream.cpp
+    third_party/raw_pdb/src/PDB_PublicSymbolStream.cpp
+    third_party/raw_pdb/src/PDB_RawFile.cpp
+    third_party/raw_pdb/src/PDB_SectionContributionStream.cpp
+    third_party/raw_pdb/src/PDB_SourceFileStream.cpp
+    third_party/raw_pdb/src/PDB_TPIStream.cpp
+    third_party/raw_pdb/src/PDB_Types.cpp
+)
+
 # Baseline build flags.
 if(MSVC)
   set(CMAKE_CXX_FLAGS "/EHsc /wd4018 /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX")
@@ -409,6 +434,7 @@ add_library(libbloaty STATIC
     src/elf.cc
     src/macho.cc
     src/pe.cc
+    src/pdb.cc
     third_party/lief_pe/pe_structures.h
     src/range_map.cc
     src/range_map.h
@@ -420,6 +446,7 @@ add_library(libbloaty STATIC
     src/webassembly.cc
 
     ${DEMUMBLE_SOURCES}
+    ${RAW_PDB_SOURCES}
     )
 set_property(TARGET libbloaty PROPERTY FOLDER "bloaty")
 

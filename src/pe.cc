@@ -79,8 +79,16 @@ class PeFile {
                         sizeof(pe_section));
   }
 
+  // CodeView (RSDS) debug info: identifies the matching PDB file.
+  bool has_codeview() const { return has_codeview_; }
+  const uint8_t* codeview_guid() const { return codeview_guid_; }
+  uint32_t codeview_age() const { return codeview_age_; }
+  const std::string& pdb_path() const { return pdb_path_; }
+
  private:
   bool Initialize();
+  void ReadCodeView(uint32_t optional_header_offset);
+  string_view RvaToFileRange(uint32_t rva, uint32_t size) const;
 
   string_view GetRegion(uint64_t start, uint64_t n) const {
     return StrictSubstr(data_, start, n);
@@ -96,6 +104,11 @@ class PeFile {
   string_view pe_headers_;
   string_view section_headers_;
   uint32_t section_count_;
+
+  bool has_codeview_ = false;
+  uint8_t codeview_guid_[16] = {};
+  uint32_t codeview_age_ = 0;
+  std::string pdb_path_;
 };
 
 bool PeFile::Initialize() {
@@ -152,7 +165,80 @@ bool PeFile::Initialize() {
   pe_headers_ = GetRegion(0, sections_offset);
   section_headers_ = GetRegion(sections_offset, sections_size);
 
+  ReadCodeView(pe_end);
+
   return true;
+}
+
+string_view PeFile::RvaToFileRange(uint32_t rva, uint32_t size) const {
+  for (uint32_t n = 0; n < section_count_; ++n) {
+    pe_section section;
+    memcpy(&section, section_headers_.data() + n * sizeof(section),
+           sizeof(section));
+    if (rva < section.VirtualAddress) continue;
+    uint64_t offset = uint64_t{rva} - section.VirtualAddress;
+    if (offset + size > section.SizeOfRawData) continue;
+    uint64_t file_offset = uint64_t{section.PointerToRawData} + offset;
+    if (file_offset + size > data_.size()) return string_view();
+    return data_.substr(file_offset, size);
+  }
+  return string_view();
+}
+
+// Reads the CodeView record from the debug data directory, which links the
+// image to its PDB file.  Malformed or missing debug info is not an error; the
+// file simply has no build ID.
+void PeFile::ReadCodeView(uint32_t optional_header_offset) {
+  constexpr uint32_t kDebugDirectoryIndex = 6;
+  constexpr uint32_t kDebugTypeCodeView = 2;
+  constexpr char kRsdsSignature[4] = {'R', 'S', 'D', 'S'};
+  constexpr size_t kRsdsHeaderSize = 4 + 16 + 4;  // Signature, GUID, age.
+
+  const size_t directories_offset =
+      is_64bit_ ? sizeof(pe64_optional_header) : sizeof(pe32_optional_header);
+  const size_t debug_directory_offset =
+      directories_offset + kDebugDirectoryIndex * sizeof(pe_data_directory);
+  if (pe_header_.SizeOfOptionalHeader <
+      debug_directory_offset + sizeof(pe_data_directory)) {
+    return;
+  }
+
+  // NumberOfRvaAndSize is the last field before the data directories.
+  uint32_t directory_count;
+  memcpy(&directory_count,
+         data_.data() + optional_header_offset + directories_offset -
+             sizeof(directory_count),
+         sizeof(directory_count));
+  if (directory_count <= kDebugDirectoryIndex) return;
+
+  pe_data_directory debug_directory;
+  memcpy(&debug_directory,
+         data_.data() + optional_header_offset + debug_directory_offset,
+         sizeof(debug_directory));
+  string_view entries = RvaToFileRange(debug_directory.RelativeVirtualAddress,
+                                       debug_directory.Size);
+
+  for (size_t i = 0; i + sizeof(pe_debug) <= entries.size();
+       i += sizeof(pe_debug)) {
+    pe_debug entry;
+    memcpy(&entry, entries.data() + i, sizeof(entry));
+    if (entry.Type != kDebugTypeCodeView ||
+        entry.SizeOfData < kRsdsHeaderSize ||
+        uint64_t{entry.PointerToRawData} + entry.SizeOfData > data_.size()) {
+      continue;
+    }
+
+    string_view record = data_.substr(entry.PointerToRawData, entry.SizeOfData);
+    if (memcmp(record.data(), kRsdsSignature, sizeof(kRsdsSignature)) != 0) {
+      continue;
+    }
+    memcpy(codeview_guid_, record.data() + 4, sizeof(codeview_guid_));
+    memcpy(&codeview_age_, record.data() + 20, sizeof(codeview_age_));
+    string_view path = record.substr(kRsdsHeaderSize);
+    pdb_path_ = std::string(path.substr(0, path.find('\0')));
+    has_codeview_ = true;
+    return;
+  }
 }
 
 class Section {
@@ -200,6 +286,18 @@ void ParseSections(const PeFile& pe, RangeSink* sink) {
   });
 }
 
+// Covers whatever the debug information did not attribute (padding, linker
+// generated data, ...) with the name of the section it lives in.
+void AddSectionFallback(const PeFile& pe, RangeSink* sink) {
+  ForEachSection(pe, [sink, &pe](const Section& section) {
+    std::string_view section_data = StrictSubstr(
+        pe.entire_file(), section.raw_offset(), section.raw_size());
+    sink->AddRange("pe_fallback", "[section " + section.name + "]",
+                   section.virtual_addr(), section.virtual_size(),
+                   section_data);
+  });
+}
+
 void AddCatchAll(const PeFile& pe, RangeSink* sink) {
   assert(pe.IsOpen());
 
@@ -222,9 +320,18 @@ class PEObjectFile : public ObjectFile {
       : ObjectFile(std::move(file_data)), pe_file(std::move(pe)) {}
 
   std::string GetBuildId() const override {
-    // TODO(mj): Read from pe_pdb_??
-    return std::string();
+    if (!pe_file->has_codeview()) {
+      return std::string();
+    }
+    // GUID followed by age, matching the PDB's build ID (see pdb.cc).
+    uint32_t age = pe_file->codeview_age();
+    std::string build_id(16 + sizeof(age), '\0');
+    memcpy(&build_id[0], pe_file->codeview_guid(), 16);
+    memcpy(&build_id[16], &age, sizeof(age));
+    return build_id;
   }
+
+  std::string GetDebugLinkPath() const override { return pe_file->pdb_path(); }
 
   void ProcessFile(const std::vector<RangeSink*>& sinks) const override {
     for (auto sink : sinks) {
@@ -238,10 +345,14 @@ class PEObjectFile : public ObjectFile {
         case DataSource::kRawSymbols:
         case DataSource::kShortSymbols:
         case DataSource::kFullSymbols:
-          // TODO(mj): Generate symbols from debug info, exports, imports, tls
-          // data, relocations, resources ...
-        case DataSource::kArchiveMembers:
+          ReadPDBSymbols(GetPdbData(), sink);
+          AddSectionFallback(*pe_file, sink);
+          break;
         case DataSource::kCompileUnits:
+          ReadPDBCompileUnits(GetPdbData(), sink);
+          AddSectionFallback(*pe_file, sink);
+          break;
+        case DataSource::kArchiveMembers:
         case DataSource::kInlines:
         default:
           THROW("PE doesn't support this data source");
@@ -257,6 +368,17 @@ class PEObjectFile : public ObjectFile {
   }
 
  protected:
+  string_view GetPdbData() const {
+    string_view data = debug_file().file_data().data();
+    if (&debug_file() == this || !IsPDBFile(data)) {
+      THROW(
+          "this data source requires the PE file's PDB; it was not found next "
+          "to the binary or at the path recorded in it, use "
+          "--debug-file=<file.pdb>");
+    }
+    return data;
+  }
+
   std::unique_ptr<pe::PeFile> pe_file;
 };
 
